@@ -13,7 +13,7 @@ def get_flights(date, origin, destination):
          chrome_options.add_argument("--no-sandbox")  
 
          
-         service = Service('C:\\Users\\fx506heb\\Downloads\\chromedriver-win64\\chromedriver-win64\\chromedriver.exe')  # مسیر chromedriver رو تنظیم کن
+         service = Service('C:\\Users\\fx506heb\\Downloads\\chromedriver-win64\\chromedriver-win64\\chromedriver.exe')  
 
          
          driver = webdriver.Chrome(service=service, options=chrome_options)
