@@ -46,7 +46,7 @@ reports/
 test-reports/
 
 
-chromedriver
+
 geckodriver
 msedgedriver
 
