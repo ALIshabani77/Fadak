@@ -14,7 +14,7 @@ def get_flights(date, origin, destination):
          chrome_options.add_argument("--no-sandbox")  
 
          
-        #  chromedriver_path = os.path.expanduser('C:\Users\fx506heb\Downloads\chromedriver-linux64\chromedriver-linux64')  # مسیر chromedriver در پوشه خانگی
+        #  chromedriver_path = os.path.expanduser('C:\Users\fx506heb\Downloads\chromedriver-linux64\chromedriver-linux64')  
          chromedriver_path = 'chromedriver'
          service = Service(chromedriver_path)
 
@@ -97,7 +97,7 @@ def get_bus(date, origin, destination):
 
 
 
-            buses= []                                         #سوال
+            buses= []                                        
             bus_elements=driver.find_elements(By.CLASS_NAME,'trip-card-container')
             for bus in bus_elements:
                   origin= bus.find_elements(By.CLASS_NAME,'location')[0].text.strip()
@@ -150,8 +150,8 @@ def get_trains(date, origin, destination):
          chrome_options.add_argument("--no-sandbox")  
 
          
-         chromedriver_path = os.path.expanduser('C:\Users\fx506heb\Downloads\chromedriver-linux64\chromedriver-linux64')  # مسیر chromedriver در پوشه خانگی
-         #chromedriver_path = 'chromedriver'
+         #chromedriver_path = os.path.expanduser('C:\Users\fx506heb\Downloads\chromedriver-linux64\chromedriver-linux64')  
+         chromedriver_path = 'chromedriver'
          service = Service(chromedriver_path)
 
          
