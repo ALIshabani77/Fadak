@@ -14,7 +14,7 @@ def setup_chromedriver():
     chrome_options.add_argument("--no-sandbox")
 
    
-    chromedriver_path = 'chromedriver.exe'  
+    chromedriver_path = '/usr/src/app/chromedriver'  
     service = Service(chromedriver_path)
     
     driver = webdriver.Chrome(service=service, options=chrome_options)
