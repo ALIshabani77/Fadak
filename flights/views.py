@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from .utils import get_flights  
-from .utils import get_bus
+from .utils import get_buses
 from .utils import get_trains
 
 class FlightList(APIView):
@@ -23,23 +23,20 @@ class FlightList(APIView):
 
 
 
-        
-             
-
 
 class Buslist(APIView):
     def get(self, request, origin_destination, date):
 
         origin, destination=origin_destination.split('-')
 
-        buses_json=get_bus(origin,destination,date)
+        buses=get_buses(date, origin, destination)
 
-        if buses_json:
-             return Response(buses_json, content_type='application/json')
+        if buses:
+             return Response(buses, content_type='application/json')
              #buses_data = json.loads(buses_json)  # تبدیل رشته JSON به دیکشنری
              #return Response(buses_data, content_type='application/json')
         else:
-            return Response({"error": "No flights found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "No buses found"}, status=status.HTTP_404_NOT_FOUND)
         
 
         
@@ -51,14 +48,14 @@ class Trainlist(APIView):
 
         origin, destination=origin_destination.split('-')
 
-        trains_json=get_trains(origin,destination,date)
+        trains=get_trains(date, origin, destination)
 
-        if trains_json:
-             return Response(trains_json, content_type='application/json')
+        if trains:
+             return Response(trains, content_type='application/json')
              #buses_data = json.loads(buses_json)  # تبدیل رشته JSON به دیکشنری
              #return Response(buses_data, content_type='application/json')
         else:
-            return Response({"error": "No flights found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "No trains found"}, status=status.HTTP_404_NOT_FOUND)
         
              
 
