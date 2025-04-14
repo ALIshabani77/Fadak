@@ -134,3 +134,16 @@ REST_FRAMEWORK = {
              'rest_framework.parsers.JSONParser',  
          ],
      }
+
+
+
+
+TIME_ZONE = 'Asia/Tehran'  # تنظیم منطقه زمانی به تهران
+USE_TZ = True  # استفاده از زمان‌محلی
+
+
+
+# settings.py
+
+OPENWEATHERMAP_API_KEY = "4d7bb9e4e41e2001cb24549cd217067a"  # کلید API شما
+TESTING = False
