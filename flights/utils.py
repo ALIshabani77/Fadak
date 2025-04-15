@@ -1,595 +1,381 @@
+import re
+import time
+from datetime import datetime
+from django.utils import timezone
+from django.conf import settings
+import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
-import time
-import json 
-import os
-from .models import Flight 
-from .models import Bus
-from .models import Train
-from django.utils import timezone
+from webdriver_manager.chrome import ChromeDriverManager
+from .models import Weather, CalendarEvent, Flight, Bus, Train
+import logging
+import jdatetime
 
+logger = logging.getLogger(__name__)
 
+# -------------------- Helper Functions --------------------
 
-
-global_driver = None
-def setup_chromedriver():
-    global global_driver  
-    if global_driver is None:  
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-
-        
-        global_driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    return global_driver
-
-
-# def setup_chromedriver():
-#     chrome_options = webdriver.ChromeOptions()
-#     chrome_options.add_argument("--headless")
-#     chrome_options.add_argument("--disable-gpu")
-#     chrome_options.add_argument("--no-sandbox")
-
-   
-#     chromedriver_path ='chromedriver'                                   #'/usr/src/app/chromedriver'  
-#     service = Service(chromedriver_path)
+def gregorian_to_jalali(dt):
+    """Convert Gregorian datetime to Jalali date string"""
+    if isinstance(dt, str):
+        dt = datetime.strptime(dt, '%Y-%m-%d %H:%M')
+        dt = timezone.make_aware(dt)
     
-#     driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
+    jalali_dt = jdatetime.datetime.fromgregorian(datetime=dt)
+    return jalali_dt.strftime('%Y-%m-%d %H:%M')
+
+def convert_time_to_local(dt):
+    """Convert time to local time format"""
+    if not timezone.is_aware(dt):
+        dt = timezone.make_aware(dt)
+    local_time = timezone.localtime(dt)
+    return local_time.strftime("%H:%M")
+
+def extract_number(text):
+    """استخراج اعداد از متن با پشتیبانی از تمام فرمت‌ها"""
+    if not text:
+        return 0
+    
+    # حذف تمام کاراکترهای غیرعددی (به جز نقطه و ویرگول)
+    cleaned = re.sub(r'[^\d٫,]', '', text)
+    
+    # جایگزینی جداکننده‌های فارسی و انگلیسی
+    cleaned = cleaned.replace('٫', '').replace(',', '')
+    
+    # استخراج تمام ارقام
+    numbers = re.findall(r'\d+', cleaned)
+    
+    return int(''.join(numbers)) if numbers else 0
+# -------------------- Base Scraper Class --------------------
+
+class BaseScraper:
+    """Base class for travel information scrapers"""
+    
+    def __init__(self):
+        self.driver = None
+        
+    def setup_driver(self):
+        """Setup selenium driver"""
+        options = Options()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--allow-running-insecure-content')
+        options.add_argument('--disable-web-security')
+        options.add_argument('--disable-extensions')
+        
+        # Disable SSL verification
+        options.add_argument('--ignore-ssl-errors=yes')
+        options.add_argument('--ssl-protocol=any')
+        
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service, options=options)
+        self.driver.implicitly_wait(10)  # Wait up to 10 seconds for elements
+        
+    def extract_trip_data(self, element, date):
+        try:
+            origin = element.find_element(By.CLASS_NAME, 'location').text.strip()
+            destination = element.find_elements(By.CLASS_NAME, 'location')[1].text.strip()
+            time = element.find_element(By.CLASS_NAME, 'time-container').text.strip()
+            price = extract_number(element.find_element(By.CLASS_NAME, 'payable-price').text)
+            capacity = extract_number(element.find_element(By.CLASS_NAME, 'capacity-text').text)
+            type_class = element.find_element(By.CLASS_NAME, 'title').text.strip()
+            
+            return {
+                'origin': origin,
+                'destination': destination,
+                'time': time,
+                'price': price,
+                'capacity': capacity,
+                'type_class': type_class,
+                'date': date
+            }
+        except Exception as e:
+            logger.error(f"Error extracting trip data: {e}")
+            return None
+    def _create_trip_object(self, model_class, trip_data):
+        """Create model object from extracted data"""
+        if not trip_data:
+            return None
+            
+        try:
+            departure_datetime = timezone.make_aware(datetime.strptime(
+                f"{trip_data['date']} {trip_data['time']}", "%Y-%m-%d %H:%M"
+            ))
+            
+            # Get weather for destination city
+            weather = get_weather(trip_data['destination'])
+            
+            # Get calendar events for departure date
+            calendar_event = get_calendar_events(departure_datetime.date())
+            
+            # Create the trip object without weather if not available
+            trip = model_class.objects.create(
+                origin=trip_data['origin'],
+                destination=trip_data['destination'],
+                departure_datetime=departure_datetime,
+                price=trip_data['price'],
+                capacity=trip_data['capacity'],
+                type_of_class=trip_data['type_class'],
+                calendar_event=calendar_event
+            )
+            
+            # Add weather later if available
+            if weather:
+                trip.weather = weather
+                trip.save()
+            
+            return trip
+            
+        except Exception as e:
+            logger.error(f"Error creating trip object: {str(e)}")
+            return None
+# -------------------- Flight Scraper --------------------
+
+class FlightScraper(BaseScraper):
+    """Scraper for flights"""
+    
+    def __init__(self):
+        super().__init__()
+        self.base_url = "https://www.mrbilit.com/flights"
+
+    def get_flights(self, date, origin, destination):
+        """Get flights information"""
+        try:
+            self.setup_driver()
+            url = f"{self.base_url}/{origin}-{destination}?departureDate={date}"
+            logger.info(f"Fetching flights from: {url}")
+            
+            self.driver.get(url)
+            time.sleep(5)  # Wait for page to load
+            
+            flights = []
+            flight_elements = self.driver.find_elements(By.CLASS_NAME, 'trip-card-container')
+            logger.info(f"Found {len(flight_elements)} flights")
+            
+            for element in flight_elements:
+                flight_data = self.extract_trip_data(element, date)
+                if flight_data:
+                    flight_obj = self._create_trip_object(Flight, flight_data)
+                    if flight_obj:
+                        flights.append(flight_obj)
+            
+            return flights
+        except Exception as e:
+            logger.error(f"Error getting flights: {str(e)}")
+            return []
+        finally:
+            if self.driver:
+                self.driver.quit()
+
+# -------------------- Bus Scraper --------------------
+
+class BusScraper(BaseScraper):
+    """Scraper for buses"""
+    
+    def __init__(self):
+        super().__init__()
+        self.base_url = "https://www.mrbilit.com/buses"
+
+    def get_buses(self, date, origin, destination):
+        """Get buses information"""
+        try:
+            self.setup_driver()
+            url = f"{self.base_url}/{origin}-{destination}?departureDate={date}"
+            logger.info(f"Fetching buses from: {url}")
+            
+            self.driver.get(url)
+            time.sleep(5)
+            
+            buses = []
+            bus_elements = self.driver.find_elements(By.CLASS_NAME, 'trip-card-container')
+            logger.info(f"Found {len(bus_elements)} buses")
+            
+            for element in bus_elements:
+                bus_data = self.extract_trip_data(element, date)
+                if bus_data:
+                    bus_obj = self._create_trip_object(Bus, bus_data)
+                    if bus_obj:
+                        buses.append(bus_obj)
+            
+            return buses
+        except Exception as e:
+            logger.error(f"Error getting buses: {str(e)}")
+            return []
+        finally:
+            if self.driver:
+                self.driver.quit()
+
+# -------------------- Train Scraper --------------------
+
+class TrainScraper(BaseScraper):
+    """Scraper for trains"""
+    
+    def __init__(self):
+        super().__init__()
+        self.base_url = "https://www.mrbilit.com/trains"
+
+    def get_trains(self, date, origin, destination):
+        """Get trains information"""
+        try:
+            self.setup_driver()
+            url = f"{self.base_url}/{origin}-{destination}?departureDate={date}"
+            logger.info(f"Fetching trains from: {url}")
+            
+            self.driver.get(url)
+            time.sleep(5)
+            
+            trains = []
+            train_elements = self.driver.find_elements(By.CLASS_NAME, 'trip-card-container')
+            logger.info(f"Found {len(train_elements)} trains")
+            
+            for element in train_elements:
+                train_data = self.extract_trip_data(element, date)
+                if train_data:
+                    train_obj = self._create_trip_object(Train, train_data)
+                    if train_obj:
+                        trains.append(train_obj)
+            
+            return trains
+        except Exception as e:
+            logger.error(f"Error getting trains: {str(e)}")
+            return []
+        finally:
+            if self.driver:
+                self.driver.quit()
+
+# -------------------- API Functions --------------------
+
+def get_weather(city_name):
+    """Get weather information from OpenWeatherMap API"""
+    try:
+        if not city_name:
+            logger.warning("City name is empty")
+            return None
+
+        # First try to get existing weather data that's not too old (e.g. less than 1 hour old)
+        one_hour_ago = timezone.now() - timezone.timedelta(hours=1)
+        existing_weather = Weather.objects.filter(
+            city=city_name,
+            request_date_time__gte=one_hour_ago
+        ).first()
+
+        if existing_weather:
+            return existing_weather
+
+        params = {
+            "q": city_name,
+            "appid": settings.OPENWEATHERMAP_API_KEY,
+            "units": "metric",
+            "lang": "fa"
+        }
+
+        response = requests.get(
+            "https://api.openweathermap.org/data/2.5/weather",
+            params=params,
+            timeout=10
+        )
+        response.raise_for_status()
+
+        data = response.json()
+
+        weather_data = {
+            'temperature': data['main']['temp'],
+            'description': data['weather'][0]['description'],
+            'temp_min': data['main'].get('temp_min'),
+            'temp_max': data['main'].get('temp_max'),
+            'humidity': data['main'].get('humidity'),
+            'pressure': data['main'].get('pressure'),
+            'wind_speed': data.get('wind', {}).get('speed', 0),
+            'icon': data['weather'][0].get('icon', '01d'),  # Ensure this line is correct
+            'weather_description': data['weather'][0].get('description'),
+            'weather_icon': data['weather'][0].get('icon', '01d')
+        }
+
+        weather, created = Weather.objects.update_or_create(
+            city=city_name,
+            defaults=weather_data
+        )
+
+        return weather
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error getting weather for {city_name}: {str(e)}")
+    except KeyError as e:
+        logger.error(f"Key error in weather data for {city_name}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error getting weather for {city_name}: {str(e)}")
+
+    # Return None if we can't get weather data
+    return None
+
+def clean_event_text(event_text):
+    """Remove Gregorian dates in brackets from event text"""
+    if not event_text:
+        return event_text
+    
+    # Remove all occurrences of [DD Month] or similar patterns
+    cleaned_text = re.sub(r'\s*\[.*?\]\s*', '', event_text)
+    # Remove any extra commas left after cleaning
+    cleaned_text = re.sub(r',\s*,', ',', cleaned_text).strip(', ')
+    return cleaned_text
+
+def get_calendar_events(date):
+    """Get calendar events from API"""
+    try:
+        params = {
+            'year': date.year,
+            'month': date.month,
+            'day': date.day
+        }
+        
+        response = requests.get(
+            "https://pnldev.com/api/calender",
+            params=params,
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        logger.info("Calendar data received")
+        
+        if data.get('status'):
+            result = data['result']
+            raw_events = ", ".join(result.get('event', [])) or None
+            
+            # Clean events text by removing Gregorian dates
+            cleaned_events = clean_event_text(raw_events) if raw_events else None
+
+            event, created = CalendarEvent.objects.update_or_create(
+                date=date,
+                defaults={
+                    'is_holiday': result.get('holiday', False),
+                    'solar_year': result['solar']['year'],
+                    'solar_month': result['solar']['month'],
+                    'solar_day': result['solar']['day'],
+                    'events': cleaned_events  # Use cleaned version
+                }
+            )
+            
+            return event
+        return None
+    except Exception as e:
+        logger.error(f"Error getting calendar events: {str(e)}")
+        return None
+
+# -------------------- Public Interface --------------------
 
 def get_flights(date, origin, destination):
-    driver = setup_chromedriver()
-    try:
-        url = f"https://www.mrbilit.com/flights/{origin}-{destination}?adultCount=1&departureDate={date}"
-        driver.get(url)
-        time.sleep(10)
-
-        flights = []
-        flight_elements = driver.find_elements(By.CLASS_NAME, 'trip-card-container')
-        for flight in flight_elements:
-            try:
-                origin = flight.find_elements(By.CLASS_NAME, 'location')[0].text.strip()
-                destination = flight.find_elements(By.CLASS_NAME, 'location')[1].text.strip()
-                time_str = flight.find_elements(By.CLASS_NAME, 'time-container')[0].text.strip()
-                price = flight.find_elements(By.CLASS_NAME, 'payable-price')[0].text.strip()
-                capacity = flight.find_elements(By.CLASS_NAME, 'capacity-text')[0].text.strip()
-                type_of_clases = flight.find_elements(By.CLASS_NAME, 'title')[0].text.strip()
-
-                flight_data = {
-                    "origin": origin,
-                    "destination": destination,
-                    "time": time_str,
-                    "price": price,
-                    "capacity": capacity,
-                    "type_of_clases": type_of_clases,
-                    "departure_date": date,  
-                    "request_date_time": timezone.now()
-                }
-                flights.append(flight_data)
-
-                
-                Flight.objects.create(
-                    origin=origin,
-                    destination=destination,
-                    time=time_str,
-                    price=price,
-                    capacity=capacity,
-                    type_of_class=type_of_clases,
-                    departure_date=date,  
-                    request_date_time=timezone.now()
-                 )
-            except Exception as e:
-                print(f"Error extracting flight data: {e}")
-                continue
-
-        return flights
-    finally:
-        pass
-
-
-
-
+    """Public interface for getting flights"""
+    return FlightScraper().get_flights(date, origin, destination)
 
 def get_buses(date, origin, destination):
-    driver = setup_chromedriver()  
-    try:
-        url = f"https://mrbilit.com/buses/{origin}-{destination}?adultCount=1&departureDate={date}"
-        driver.get(url)
-        time.sleep(10)
-
-        buses = []
-        bus_elements = driver.find_elements(By.CLASS_NAME, 'trip-card-container')
-        print(f"Found {len(bus_elements)} bus elements")
-        for bus in bus_elements:
-            try:
-               origin = bus.find_elements(By.CLASS_NAME, 'location')[0].text.strip()
-               destination = bus.find_elements(By.CLASS_NAME, 'location')[1].text.strip()
-               time_str = bus.find_elements(By.CLASS_NAME, 'time-container')[0].text.strip()
-               price = bus.find_elements(By.CLASS_NAME, 'payable-price')[0].text.strip()
-               capacity = bus.find_elements(By.CLASS_NAME, 'capacity-text')[0].text.strip()
-               type_of_clases = bus.find_elements(By.CLASS_NAME, 'title')[0].text.strip()
-
-               bus_data = {
-                     "origin": origin,
-                     "destination": destination,
-                     "time": time_str,
-                     "price": price,
-                     "capacity": capacity,
-                     "type_of_clases": type_of_clases,
-                     "departure_date": date,  
-                     "request_date_time": timezone.now()
-               }
-               buses.append(bus_data)
-               
-               Bus.objects.create(
-                    origin=origin,
-                    destination=destination,
-                    time=time_str,
-                    price=price,
-                    capacity=capacity,
-                    type_of_class=type_of_clases,
-                    departure_date=date, 
-                    request_date_time=timezone.now(), 
-                )
-
-
-            except Exception as e:
-                print(f"Error extracting buses data: {e}")
-                continue  
-       # buses_json = json.dumps(buses, ensure_ascii=False, indent=4)
-       # return buses_json
-        return buses
-    finally:
-        #driver.quit()
-        pass
+    """Public interface for getting buses"""
+    return BusScraper().get_buses(date, origin, destination)
 
 def get_trains(date, origin, destination):
-    driver = setup_chromedriver()  
-    try:
-        url = f"https://www.mrbilit.com/trains/{origin}-{destination}?adultCount=1&departureDate={date}"
-        driver.get(url)
-        time.sleep(10)
-
-        trains = []
-        train_elements = driver.find_elements(By.CLASS_NAME, 'trip-card-container')
-        for train in train_elements:
-            try:
-               origin = train.find_elements(By.CLASS_NAME, 'location')[0].text.strip()
-               destination = train.find_elements(By.CLASS_NAME, 'location')[1].text.strip()
-               time_str = train.find_elements(By.CLASS_NAME, 'time-container')[0].text.strip()
-               price = train.find_elements(By.CLASS_NAME, 'payable-price')[0].text.strip()
-               capacity = train.find_elements(By.CLASS_NAME, 'capacity-text')[0].text.strip()
-               type_of_clases = train.find_elements(By.CLASS_NAME, 'title')[0].text.strip()
-
-               train_data = {
-                "origin": origin,
-                "destination": destination,
-                "time": time_str,
-                "price": price,
-                "capacity": capacity,
-                "type_of_clases": type_of_clases,
-                "departure_date": date,  
-                "request_date_time": timezone.now()
-               }
-               trains.append(train_data)
-               Train.objects.create(
-                   origin=origin,
-                    destination=destination,
-                    time=time_str,
-                    price=price,
-                    capacity=capacity,
-                    type_of_class=type_of_clases,
-                    departure_date=date,  
-                    request_date_time=timezone.now()
-               )
-
-            except Exception as e:
-                print(f"Error extracting trains data: {e}")
-                continue  
-
-        #trains_json = json.dumps(trains, ensure_ascii=False, indent=4)
-        return trains
-    
-    finally:
-       # driver.quit()
-       pass
-
-
-
-def close_chromedriver():
-    global global_driver
-    if global_driver is not None:
-        global_driver.quit()
-        global_driver = None
-
-
-
-
-
-
-
-
-
-def get_flights(date, origin, destination):
-         driver = setup_chromedriver()
-         try:
-             url = f"https://www.mrbilit.com/flights/{origin}-{destination}?adultCount=1&departureDate={date}"
-             driver.get(url)
-             time.sleep(10)
-
-             flights = []
-             flight_elements = driver.find_elements(By.CLASS_NAME, 'trip-card-container')
-             for flight in flight_elements:
-                 try:
-                     origin = flight.find_elements(By.CLASS_NAME, 'location')[0].text.strip()
-                     destination = flight.find_elements(By.CLASS_NAME, 'location')[1].text.strip()
-                     time_str = flight.find_elements(By.CLASS_NAME, 'time-container')[0].text.strip()
-                     price = flight.find_elements(By.CLASS_NAME, 'payable-price')[0].text.strip()
-                     capacity = flight.find_elements(By.CLASS_NAME, 'capacity-text')[0].text.strip()
-                     type_of_clases = flight.find_elements(By.CLASS_NAME, 'title')[0].text.strip()
-
-                     flight_data = {
-                         "origin": origin,
-                         "destination": destination,
-                         "time": time_str,
-                         "price": price,
-                         "capacity": capacity,
-                         "type_of_clases": type_of_clases,
-                         "departure_date": date,  
-                         "request_date_time": timezone.now()
-                     }
-                     flights.append(flight_data)
-
-                     Flight.objects.create(
-                         origin=origin,
-                         destination=destination,
-                         time=time_str,
-                         price=price,
-                         capacity=capacity,
-                         type_of_class=type_of_clases,
-                         departure_date=date,  
-                         request_date_time=timezone.now()
-                         
-                     )
-                 except Exception as e:
-                     print(f"Error extracting flight data: {e}")
-                     continue
-
-             return flights
-         finally:
-             pass
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# def get_flights(date, origin, destination):
-         
-#          chrome_options = Options()
-#          chrome_options.add_argument("--headless")  
-#          chrome_options.add_argument("--disable-gpu")  
-#          chrome_options.add_argument("--no-sandbox")  
-
-         
-#         #  chromedriver_path = os.path.expanduser('C:\Users\fx506heb\Downloads\chromedriver-linux64\chromedriver-linux64')  
-#          chromedriver_path = 'chromedriver'
-#          service = Service(chromedriver_path)
-
-         
-#         #  service = Service('C:\\Users\\fx506heb\\Downloads\\chromedriver-win64\\chromedriver-win64\\chromedriver.exe')  
-
-         
-#          driver = webdriver.Chrome(service=service, options=chrome_options)
-
-#          try:
-             
-#              url = f"https://www.mrbilit.com/flights/{origin}-{destination}?adultCount=1&departureDate={date}"
-#              driver.get(url)
-
-  
-#              time.sleep(10)
-
-             
-#              flights = []  
-#              flight_elements = driver.find_elements(By.CLASS_NAME, 'trip-card-container')  
-#              for flight in flight_elements:
-#                  origin = flight.find_elements(By.CLASS_NAME, 'location')[0].text.strip()
-#                  print(origin)
-#                  destination = flight.find_elements(By.CLASS_NAME, 'location')[1].text.strip()
-#                  print(destination)
-#                  time_str = flight.find_elements(By.CLASS_NAME, 'time-container')[0].text.strip()
-#                  print(time_str)
-#                  price = flight.find_elements(By.CLASS_NAME, 'payable-price')[0].text.strip()
-#                  capacity = flight.find_elements(By.CLASS_NAME, 'capacity-text')[0].text.strip()
-#                  print(capacity)
-#                  type_of_clases = flight.find_elements(By.CLASS_NAME, 'title')[0].text.strip()
-#                  print(type_of_clases)
-#                  print('-----------------------')
-
-#                  flight_data = {
-#                      "origin": origin,
-#                      "destination": destination,
-#                      "time": time_str,
-#                      "price": price,
-#                      "capacity": capacity,
-#                      "type_of_clases": type_of_clases,
-#                  }
-                
-
-#                  flights.append(flight_data)
-#                  #return flights
-
-#                  flights_json = json.dumps(flights, ensure_ascii=False, indent=4)  
-
-#                  with open('flights.json', 'w', encoding='utf-8') as f:
-#                     f.write(flights_json)
-
-#                  return flights_json
-             
-#          finally:
-             
-#              driver.quit()
-
-
-
-# def get_bus(date, origin, destination):
-
-#         chrome_options= Options()
-#         chrome_options.add_argument("--headless")
-#         chrome_options.add_argument("--disable-gpu")
-#         chrome_options.add_argument("--no-sandbox")
-
-#         chromedriver_path = 'chromedriver'
-#         service = Service(chromedriver_path)  
-
-#         driver= webdriver.Chrome(service=service,options=chrome_options)
-
-#         try:
-#             #https://mrbilit.com/buses/tehran-mashhad?departureDate=1403-12-20
-#             url= f"https://mrbilit.com/buses/{origin}-{destination}?adultCount=1&departureDate={date}"
-#             driver.get(url)
-
-#             time.sleep(10)
-
-
-
-
-#             buses= []                                        
-#             bus_elements=driver.find_elements(By.CLASS_NAME,'trip-card-container')
-#             for bus in bus_elements:
-#                   origin= bus.find_elements(By.CLASS_NAME,'location')[0].text.strip()
-#                   print(origin)
-#                   destination=bus.find_elements(By.CLASS_NAME,'location')[1].text.strip()
-#                   print(destination)
-#                   time_str=bus.find_elements(By.CLASS_NAME,'time-container')[0].text.strip()
-#                   print(time_str)
-#                   price=bus.find_elements(By.CLASS_NAME,'payable-price')[0].text.strip()
-#                   print(price)
-#                   capacity =bus.find_elements(By.CLASS_NAME, 'capacity-text')[0].text.strip()
-#                   print(capacity)
-#                   type_of_clases = bus.find_elements(By.CLASS_NAME, 'title')[0].text.strip()
-#                   print(type_of_clases)
-#                   print('-----------------------')
-
-#                   bus_data ={
-#                      "origin": origin,
-#                      "destination": destination,
-#                      "time": time_str,
-#                      "price": price,
-#                      "capacity": capacity,
-#                      "type_of_clases": type_of_clases,
-#                   }
-
-#                   buses.append(bus_data)
-#                   return buses
-
-#                   buses_json = json.dumps(buses,ensure_ascii=False,indent=4)
-
-#                   with open('flights.json', 'w', encoding='utf-8') as f:
-#                     f.write(buses_json)
-                    
-#                     return buses_json
-#         finally:
-#              driver.quit()
-
-
-
-
-
-
-
-
-# def get_trains(date, origin, destination):
-         
-#          chrome_options = Options()
-#          chrome_options.add_argument("--headless")  
-#          chrome_options.add_argument("--disable-gpu")  
-#          chrome_options.add_argument("--no-sandbox")  
-
-         
-#          #chromedriver_path = os.path.expanduser('C:\Users\fx506heb\Downloads\chromedriver-linux64\chromedriver-linux64')  
-#          chromedriver_path = 'chromedriver'
-#          service = Service(chromedriver_path)
-
-         
-#         #  service = Service('C:\\Users\\fx506heb\\Downloads\\chromedriver-win64\\chromedriver-win64\\chromedriver.exe')  
-
-         
-#          driver = webdriver.Chrome(service=service, options=chrome_options)
-
-#          try:
-             
-#              url = f"https://www.mrbilit.com/trains/{origin}-{destination}?adultCount=1&departureDate={date}"
-#              driver.get(url)
-
-             
-#              time.sleep(10)
-
-             
-#              trains = []  
-#              flight_elements = driver.find_elements(By.CLASS_NAME, 'trip-card-container')  
-#              for flight in flight_elements:
-#                  origin = flight.find_elements(By.CLASS_NAME, 'location')[0].text.strip()
-#                  print(origin)
-#                  destination = flight.find_elements(By.CLASS_NAME, 'location')[1].text.strip()
-#                  print(destination)
-#                  time_str = flight.find_elements(By.CLASS_NAME, 'time-container')[0].text.strip()
-#                  print(time_str)
-#                  price = flight.find_elements(By.CLASS_NAME, 'payable-price')[0].text.strip()
-#                  capacity = flight.find_elements(By.CLASS_NAME, 'capacity-text')[0].text.strip()
-#                  print(capacity)
-#                  type_of_clases = flight.find_elements(By.CLASS_NAME, 'title')[0].text.strip()
-#                  print(type_of_clases)
-#                  print('-----------------------')
-
-#                  train_data = {
-#                      "origin": origin,
-#                      "destination": destination,
-#                      "time": time_str,
-#                      "price": price,
-#                      "capacity": capacity,
-#                      "type_of_clases": type_of_clases,
-#                  }
-                
-
-#                  trains.append(train_data)
-#                  #return trains
-
-#                  trains_json = json.dumps(trains, ensure_ascii=False, indent=4)  
-
-#                  with open('flights.json', 'w', encoding='utf-8') as f:
-#                     f.write(trains_json)
-
-#                  return trains_json
-             
-#          finally:
-             
-#              driver.quit()
-
-
-
-
-
-
-
-
+    """Public interface for getting trains"""
+    return TrainScraper().get_trains(date, origin, destination)
