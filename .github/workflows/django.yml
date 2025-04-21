@@ -43,7 +43,7 @@ jobs:
       - name: Run migrations and tests
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/github_actions
-          DJANGO_SETTINGS_MODULE: flights.settings  # ✅ جایگزین با نام واقعی پروژه
+          DJANGO_SETTINGS_MODULE: sellei.settings  # ✅ جایگزین با نام واقعی پروژه
         run: |
           python manage.py migrate
           python manage.py test
