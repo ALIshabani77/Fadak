@@ -1,7 +1,7 @@
-import os
-import django
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sellei.settings')
-django.setup()
+# import os
+# import django
+# os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sellei.settings')
+# django.setup()
 
 from unittest.mock import patch, MagicMock
 from django.test import TestCase
