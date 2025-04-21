@@ -58,3 +58,6 @@ websocket-client==1.8.0
 wsproto==1.2.0
 zope.interface==7.2
 webdriver-manager
+jdatetime
+pytest
+pytest-Django
