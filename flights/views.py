@@ -193,7 +193,45 @@ class CalendarEventView(APIView):
 
 
 
+from django.shortcuts import render
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404
+from flights.utils import get_weather,get_trains,get_flights,get_buses,get_calendar_events
+from datetime import datetime
+from .models import Flight, Bus, Train, CrawlerStatus
+import logging
+import jdatetime
 
+logger = logging.getLogger(__name__)
+
+class CrawlerStatusView(APIView):
+    def get(self, request):
+        try:
+            statuses = CrawlerStatus.objects.all().order_by('-last_run')[:10]
+            
+            data = []
+            for status in statuses:
+                data.append({
+                    'crawler_type': status.get_crawler_type_display(),
+                    'last_run': status.last_run.strftime("%Y-%m-%d %H:%M"),
+                    'next_run': status.next_run.strftime("%Y-%m-%d %H:%M"),
+                    'status': status.status,
+                    'items_crawled': status.items_crawled,
+                    'error_message': status.error_message,
+                    'days_ahead': status.days_ahead
+                })
+            
+            return Response(data, status=status.HTTP_200_OK)
+        
+        except Exception as e:
+            logger.error(f"Error in CrawlerStatusView: {str(e)}")
+            return Response({"error": "Internal server error"}, 
+                          status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# ... (بقیه کدهای ویوهای قبلی بدون تغییر)
 
 
 
