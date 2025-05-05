@@ -125,3 +125,6 @@ class MrBilitCrawler:
                 error_msg = f"Error crawling {ticket_type} for date {date}: {e}"
                 print(error_msg)
                 self.crawler_status[ticket_type]['error'] = error_msg
+
+
+
