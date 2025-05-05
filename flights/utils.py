@@ -112,7 +112,7 @@ class BaseScraper:
             # Get calendar events for departure date
             calendar_event = get_calendar_events(departure_datetime.date())
             
-            # Create the trip object without weather if not available
+            # Create the trip object
             trip = model_class.objects.create(
                 origin=trip_data['origin'],
                 destination=trip_data['destination'],
@@ -120,13 +120,9 @@ class BaseScraper:
                 price=trip_data['price'],
                 capacity=trip_data['capacity'],
                 type_of_class=trip_data['type_class'],
-                calendar_event=calendar_event
+                calendar_event=calendar_event,
+                weather=weather  # Add weather directly if available
             )
-            
-            # Add weather later if available
-            if weather:
-                trip.weather = weather
-                trip.save()
             
             return trip
             
@@ -283,6 +279,7 @@ def get_weather(city_name):
         data = response.json()
 
         weather_data = {
+            'city': city_name,
             'temperature': data['main']['temp'],
             'description': data['weather'][0]['description'],
             'temp_min': data['main'].get('temp_min'),
@@ -290,9 +287,7 @@ def get_weather(city_name):
             'humidity': data['main'].get('humidity'),
             'pressure': data['main'].get('pressure'),
             'wind_speed': data.get('wind', {}).get('speed', 0),
-            'icon': data['weather'][0].get('icon', '01d'),  # Ensure this line is correct
-            'weather_description': data['weather'][0].get('description'),
-            'weather_icon': data['weather'][0].get('icon', '01d')
+            'icon': data['weather'][0].get('icon', '01d')
         }
 
         weather, created = Weather.objects.update_or_create(
@@ -309,7 +304,6 @@ def get_weather(city_name):
     except Exception as e:
         logger.error(f"Unexpected error getting weather for {city_name}: {str(e)}")
 
-    # Return None if we can't get weather data
     return None
 
 def clean_event_text(event_text):
@@ -379,3 +373,4 @@ def get_buses(date, origin, destination):
 def get_trains(date, origin, destination):
     """Public interface for getting trains"""
     return TrainScraper().get_trains(date, origin, destination)
+
