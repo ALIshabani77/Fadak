@@ -4,11 +4,12 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
-from flights.utils import get_weather,get_trains,get_flights,get_buses,get_calendar_events
+from flights.utils import get_weather, get_trains, get_flights, get_buses, get_calendar_events
 from datetime import datetime
-from .models import Flight, Bus, Train
+from .models import Flight, Bus, Train, CrawlerStatus, Weather
 import logging
 import jdatetime
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class TravelListView(APIView):
             try:
                 date_obj = datetime.strptime(date, "%Y-%m-%d").date()
             except ValueError:
-                return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, 
+                return Response({"error": "فرمت تاریخ نامعتبر است. از فرمت YYYY-MM-DD استفاده کنید"}, 
                               status=status.HTTP_400_BAD_REQUEST)
             
             items = None
@@ -34,7 +35,7 @@ class TravelListView(APIView):
                 items = get_trains(date, origin, destination)
             
             if not items:
-                return Response({"error": f"No {self.model_class.__name__.lower()}s found"}, 
+                return Response({"error": f"هیچ {self.model_class.__name__.lower()}ی یافت نشد"}, 
                               status=status.HTTP_404_NOT_FOUND)
             
             items_data = []
@@ -52,8 +53,7 @@ class TravelListView(APIView):
                             'humidity': item.weather.humidity,
                             'wind_speed': item.weather.wind_speed,
                             'icon': item.weather.icon,
-                            'weather_description': item.weather.weather_description,
-                            'weather_icon': item.weather.weather_icon
+                            'last_updated': item.weather.request_date_time.strftime("%Y-%m-%d %H:%M")
                         }
                     
                     item_data = {
@@ -73,19 +73,15 @@ class TravelListView(APIView):
                     }
                     items_data.append(item_data)
                 except Exception as e:
-                    logger.error(f"Error processing item {item.id}: {str(e)}")
+                    logger.error(f"خطا در پردازش آیتم {item.id}: {str(e)}")
                     continue
             
             return Response(items_data, status=status.HTTP_200_OK)
                 
         except Exception as e:
-            logger.error(f"Error in {self.__class__.__name__}: {str(e)}", exc_info=True)
-            return Response({"error": "Internal server error"}, 
+            logger.error(f"خطا در {self.__class__.__name__}: {str(e)}", exc_info=True)
+            return Response({"error": "خطای سرور داخلی"}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-
-
 
 class FlightList(TravelListView):
     model_class = Flight
@@ -95,9 +91,6 @@ class BusList(TravelListView):
 
 class TrainList(TravelListView):
     model_class = Train
-        
-
-
 
 def weather_view(request, model_name, object_id):
     """
@@ -126,9 +119,7 @@ def weather_view(request, model_name, object_id):
                 'humidity': obj.weather.humidity,
                 'pressure': obj.weather.pressure,
                 'wind_speed': obj.weather.wind_speed,
-                'icon': obj.weather.icon,  # Ensure this line is correct
-                'weather_description': obj.weather.weather_description,
-                'weather_icon': obj.weather.weather_icon,
+                'icon': obj.weather.icon,
                 'last_updated': obj.weather.request_date_time.strftime("%Y-%m-%d %H:%M")
             }
             return JsonResponse(weather_data)
@@ -161,51 +152,13 @@ class CalendarEventView(APIView):
                 }
                 return Response(response_data, status=status.HTTP_200_OK)
             else:
-                return Response({"error": "No calendar events found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response({"error": "هیچ رویداد تقویمی یافت نشد"}, status=status.HTTP_404_NOT_FOUND)
         
         except ValueError:
-            return Response({"error": "Invalid date format"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "فرمت تاریخ نامعتبر است"}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            logger.error(f"Error in CalendarEventView: {str(e)}")
-            return Response({"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-from django.shortcuts import render
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.http import JsonResponse
-from django.shortcuts import get_object_or_404
-from flights.utils import get_weather,get_trains,get_flights,get_buses,get_calendar_events
-from datetime import datetime
-from .models import Flight, Bus, Train, CrawlerStatus
-import logging
-import jdatetime
-
-logger = logging.getLogger(__name__)
+            logger.error(f"خطا در CalendarEventView: {str(e)}")
+            return Response({"error": "خطای سرور داخلی"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class CrawlerStatusView(APIView):
     def get(self, request):
@@ -217,8 +170,8 @@ class CrawlerStatusView(APIView):
                 data.append({
                     'crawler_type': status.get_crawler_type_display(),
                     'last_run': status.last_run.strftime("%Y-%m-%d %H:%M"),
-                    'next_run': status.next_run.strftime("%Y-%m-%d %H:%M"),
-                    'status': status.status,
+                    'next_run': status.next_run.strftime("%Y-%m-%d %H:%M") if status.next_run else None,
+                    'status': status.get_status_display(),
                     'items_crawled': status.items_crawled,
                     'error_message': status.error_message,
                     'days_ahead': status.days_ahead
@@ -227,36 +180,6 @@ class CrawlerStatusView(APIView):
             return Response(data, status=status.HTTP_200_OK)
         
         except Exception as e:
-            logger.error(f"Error in CrawlerStatusView: {str(e)}")
-            return Response({"error": "Internal server error"}, 
+            logger.error(f"خطا در CrawlerStatusView: {str(e)}")
+            return Response({"error": "خطای سرور داخلی"}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-# ... (بقیه کدهای ویوهای قبلی بدون تغییر)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
