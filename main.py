@@ -2,255 +2,136 @@ import os
 import sys
 import django
 import time
+import random
 import logging
 from datetime import datetime, timedelta
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import WebDriverException
+from django.utils import timezone
+import jdatetime
 
-# 1. تنظیم محیط Django قبل از ایمپورت مدل‌ها
+# تنظیمات اولیه
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('master_bilet_crawler.log', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+# تنظیم محیط Django
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sellei.settings')
 django.setup()
 
-# 2. ایمپورت مدل‌های Django بعد از تنظیم محیط
-from django.utils import timezone
-from flights.models import Flight, Bus, Train, Weather, CalendarEvent, CrawlerStatus
+from flights.models import Flight, Bus, Train, CrawlerStatus
+from flights.utils import get_flights, get_buses, get_trains, get_weather, get_calendar_events
 
-# 3. تنظیمات لاگینگ
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('crawler.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+class MasterBiletCrawler:
+    def __init__(self):
+        self.max_retries = 3
+        self.delay_between_attempts = 10
+        self.delay_between_days = 15
+        
+        self.routes = {
+            'flights': {'origin': 'THR', 'destination': 'MHD'},
+            'buses': {'origin': 'tehran', 'destination': 'mashhad'},
+            'trains': {'origin': 'tehran', 'destination': 'mashhad'}
+        }
 
-def setup_driver():
-    """تنظیم و راه‌اندازی درایور Chrome"""
-    chrome_options = Options()
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--ignore-certificate-errors')
-    chrome_options.add_argument('--ignore-ssl-errors')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--window-size=1920,1080')
+    def get_shamsi_date(self, date):
+        jdate = jdatetime.date.fromgregorian(date=date)
+        return f"{jdate.year}-{jdate.month:02d}-{jdate.day:02d}"
+
+    def crawl_transport_data(self, date, transport_type):
+        shamsi_date = self.get_shamsi_date(date)
+        config = {
+            'flights': {'name': 'پرواز', 'get_func': get_flights},
+            'buses': {'name': 'اتوبوس', 'get_func': get_buses},
+            'trains': {'name': 'قطار', 'get_func': get_trains}
+        }[transport_type]
+        
+        route = self.routes[transport_type]
+        
+        for attempt in range(self.max_retries):
+            try:
+                logging.info(f"در حال دریافت {config['name']}ها از {route['origin']} به {route['destination']} برای تاریخ {shamsi_date}")
+                results = config['get_func'](shamsi_date, route['origin'], route['destination'])
+                
+                if results:
+                    logging.info(f"✅ {len(results)} {config['name']} دریافت شد")
+                    return results
+                else:
+                    logging.warning(f"⚠️ هیچ {config['name']}ی یافت نشد")
+                    return []
+                    
+            except Exception as e:
+                if attempt == self.max_retries - 1:
+                    logging.error(f"❌ خطا در دریافت {config['name']}ها: {str(e)}")
+                else:
+                    time.sleep(random.randint(self.delay_between_attempts, self.delay_between_attempts + 5))
+        
+        return []
+
+    def crawl_for_date(self, date):
+        shamsi_date = self.get_shamsi_date(date)
+        result = {'flights': [], 'buses': [], 'trains': [], 'weather': None, 'calendar_event': None}
+        
+        try:
+            logging.info(f"\n{'='*50}\n📅 شروع پردازش برای تاریخ: {shamsi_date}\n{'='*50}")
+            
+            # دریافت اطلاعات تقویم و آب و هوا
+            result['calendar_event'] = get_calendar_events(date)
+            result['weather'] = get_weather("مشهد")
+            
+            # کراول داده‌ها
+            result['flights'] = self.crawl_transport_data(date, 'flights')
+            result['buses'] = self.crawl_transport_data(date, 'buses')
+            result['trains'] = self.crawl_transport_data(date, 'trains')
+            
+            # ذخیره وضعیت کراولر
+            CrawlerStatus.objects.create(
+                crawler_type='all',
+                last_run=timezone.now(),
+                next_run=timezone.now() + timedelta(hours=6),
+                status='completed',
+                items_crawled=len(result['flights']) + len(result['buses']) + len(result['trains'])
+            )
+            
+            return result
+            
+        except Exception as e:
+            logging.error(f"🚨 خطا در کراولینگ: {str(e)}")
+            return None
+
+def main():
+    crawler = MasterBiletCrawler()
     
     try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
-        )
-        driver.implicitly_wait(10)
-        return driver
-    except Exception as e:
-        logging.error(f"خطا در راه‌اندازی درایور: {str(e)}")
-        raise
-
-def create_weather(city):
-    """ایجاد رکورد آب و هوا"""
-    try:
-        weather = Weather.objects.create(
-            city=city,
-            temperature=25.5,
-            temp_min=22.0,
-            temp_max=28.0,
-            humidity=65,
-            pressure=1012,
-            wind_speed=12,
-            weather_description="آفتابی"
-        )
-        return weather
-    except Exception as e:
-        logging.error(f"خطا در ایجاد رکورد آب و هوا: {str(e)}")
-        return None
-
-def create_calendar_event(date):
-    """ایجاد رکورد رویداد تقویمی"""
-    try:
-        event = CalendarEvent.objects.create(
-            date=date,
-            is_holiday=False,
-            solar_year=date.year,
-            solar_month=date.month,
-            solar_day=date.day,
-            events={"مناسبت": "بدون مناسبت خاص"}
-        )
-        return event
-    except Exception as e:
-        logging.error(f"خطا در ایجاد رکورد تقویم: {str(e)}")
-        return None
-
-def crawl_flights(driver, date):
-    """کراولینگ و ذخیره اطلاعات پروازها"""
-    try:
-        # نمونه داده‌های پرواز (جایگزین با داده‌های واقعی کراول شده)
-        weather = create_weather("تهران")
-        calendar_event = create_calendar_event(date)
+        days_to_crawl = 3
+        start_date = datetime.now().date()
         
-        flight = Flight.objects.create(
-            origin="تهران",
-            destination="مشهد",
-            price=500000,
-            capacity=150,
-            type_of_class="اقتصادی",
-            departure_datetime=date,
-            flight_number="IR123",
-            airline="ایران ایر",
-            duration=timedelta(hours=1, minutes=30),
-            weather=weather,
-            calendar_event=calendar_event
-        )
-        
-        CrawlerStatus.objects.create(
-            crawler_type='flight',
-            last_run=timezone.now(),
-            next_run=timezone.now() + timedelta(minutes=1),
-            status='completed',
-            items_crawled=1,
-            flight_data=flight
-        )
-        
-        logging.info(f"اطلاعات پرواز برای تاریخ {date} با موفقیت ذخیره شد")
-        return True
-    except Exception as e:
-        CrawlerStatus.objects.create(
-            crawler_type='flight',
-            last_run=timezone.now(),
-            next_run=timezone.now() + timedelta(minutes=1),
-            status='failed',
-            error_message=str(e)
-        )
-        logging.error(f"خطا در ذخیره اطلاعات پرواز: {str(e)}")
-        return False
-
-def crawl_buses(driver, date):
-    """کراولینگ و ذخیره اطلاعات اتوبوس‌ها"""
-    try:
-        weather = create_weather("تهران")
-        calendar_event = create_calendar_event(date)
-        
-        bus = Bus.objects.create(
-            origin="تهران",
-            destination="مشهد",
-            price=250000,
-            capacity=40,
-            type_of_class="VIP",
-            departure_datetime=date,
-            bus_company="تسپا",
-            bus_type="ویژه",
-            amenities=["TV", "WiFi"],
-            weather=weather,
-            calendar_event=calendar_event
-        )
-        
-        CrawlerStatus.objects.create(
-            crawler_type='bus',
-            last_run=timezone.now(),
-            next_run=timezone.now() + timedelta(minutes=1),
-            status='completed',
-            items_crawled=1,
-            bus_data=bus
-        )
-        
-        logging.info(f"اطلاعات اتوبوس برای تاریخ {date} با موفقیت ذخیره شد")
-        return True
-    except Exception as e:
-        CrawlerStatus.objects.create(
-            crawler_type='bus',
-            last_run=timezone.now(),
-            next_run=timezone.now() + timedelta(minutes=1),
-            status='failed',
-            error_message=str(e)
-        )
-        logging.error(f"خطا در ذخیره اطلاعات اتوبوس: {str(e)}")
-        return False
-
-def crawl_trains(driver, date):
-    """کراولینگ و ذخیره اطلاعات قطارها"""
-    try:
-        weather = create_weather("تهران")
-        calendar_event = create_calendar_event(date)
-        
-        train = Train.objects.create(
-            origin="تهران",
-            destination="مشهد",
-            price=350000,
-            capacity=300,
-            type_of_class="کوپه‌ای",
-            departure_datetime=date,
-            train_number="123",
-            train_type="مسافری",
-            wagon_count=10,
-            weather=weather,
-            calendar_event=calendar_event
-        )
-        
-        CrawlerStatus.objects.create(
-            crawler_type='train',
-            last_run=timezone.now(),
-            next_run=timezone.now() + timedelta(minutes=1),
-            status='completed',
-            items_crawled=1,
-            train_data=train
-        )
-        
-        logging.info(f"اطلاعات قطار برای تاریخ {date} با موفقیت ذخیره شد")
-        return True
-    except Exception as e:
-        CrawlerStatus.objects.create(
-            crawler_type='train',
-            last_run=timezone.now(),
-            next_run=timezone.now() + timedelta(minutes=1),
-            status='failed',
-            error_message=str(e)
-        )
-        logging.error(f"خطا در ذخیره اطلاعات قطار: {str(e)}")
-        return False
-
-def main_crawl():
-    """تابع اصلی اجرای کراولر"""
-    driver = None
-    try:
-        driver = setup_driver()
-        logging.info("🔄 در حال دریافت اطلاعات جدید...")
-        
-        today = datetime.now().date()
-        for i in range(10):  # برای 10 روز آینده
-            current_date = today + timedelta(days=i)
+        for i in range(days_to_crawl):
+            current_date = start_date + timedelta(days=i)
+            result = crawler.crawl_for_date(current_date)
             
-            if not crawl_flights(driver, current_date):
-                driver.quit()
-                driver = setup_driver()
+            if result:
+                shamsi_date = crawler.get_shamsi_date(current_date)
+                logging.info(f"\n{'='*50}\nنتایج برای تاریخ {shamsi_date}:")
+                logging.info(f"- پروازها: {len(result['flights'])} مورد")
+                logging.info(f"- اتوبوس‌ها: {len(result['buses'])} مورد")
+                logging.info(f"- قطارها: {len(result['trains'])} مورد")
+            
+            if i < days_to_crawl - 1:
+                time.sleep(crawler.delay_between_days)
                 
-            if not crawl_trains(driver, current_date):
-                driver.quit()
-                driver = setup_driver()
-                
-            if not crawl_buses(driver, current_date):
-                driver.quit()
-                driver = setup_driver()
-                
-        logging.info("✅ اطلاعات با موفقیت ذخیره شد")
+    except KeyboardInterrupt:
+        logging.info("\n🛑 دریافت سیگنال توقف")
     except Exception as e:
-        logging.error(f"خطای اصلی در کراولینگ: {str(e)}")
+        logging.error(f"\n💣 خطای غیرمنتظره: {str(e)}")
     finally:
-        if driver:
-            driver.quit()
+        logging.info("\n🏁 پایان عملیات کراولینگ")
 
 if __name__ == "__main__":
-    while True:
-        start_time = time.time()
-        main_crawl()
-        
-        # محاسبه زمان باقیمانده تا اجرای بعدی
-        elapsed_time = time.time() - start_time
-        wait_time = max(60 - elapsed_time, 0)
-        
-        logging.info(f"⏳ اجرای بعدی در {wait_time:.1f} ثانیه دیگر...")
-        time.sleep(wait_time)
-        logging.info("🔄 شروع مجدد کراولر...")
+    logging.info("\n🌟 شروع برنامه کراولر مستر بلیط")
+    main()
