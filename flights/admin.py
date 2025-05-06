@@ -8,8 +8,8 @@ import json
 
 # -------------------- Helper Functions --------------------
 
-def gregorian_to_jalali(dt):
-    """تبدیل تاریخ میلادی به شمسی با مدیریت خطا"""
+def gregorian_to_jalali_with_day(dt):
+    """تبدیل تاریخ میلادی به شمسی با روز هفته فارسی"""
     if not dt:
         return "-"
     
@@ -28,8 +28,25 @@ def gregorian_to_jalali(dt):
 
         dt = timezone.localtime(dt)
         jalali_dt = jdatetime.datetime.fromgregorian(datetime=dt)
-        return jalali_dt.strftime('%Y-%m-%d %H:%M')
-    except Exception:
+        
+        # نام روزهای هفته به فارسی
+        weekdays_fa = {
+            0: "شنبه",
+            1: "یکشنبه",
+            2: "دوشنبه",
+            3: "سه‌شنبه",
+            4: "چهارشنبه",
+            5: "پنجشنبه",
+            6: "جمعه"
+        }
+        
+        # فرمت تاریخ و زمان با صفرهای ابتدایی
+        date_time_str = f"{jalali_dt.year}-{jalali_dt.month:02d}-{jalali_dt.day:02d}"
+        weekday_str = weekdays_fa[jalali_dt.weekday()]
+        
+        return f"{date_time_str} ({weekday_str})"
+    except Exception as e:
+        print(f"Error in gregorian_to_jalali_with_day: {str(e)}")
         return "-"
 
 def safe_format_events(events):
@@ -70,6 +87,7 @@ class BaseTicketAdmin(admin.ModelAdmin):
     list_per_page = 20
     
     def calendar_info(self, obj):
+        """نمایش اطلاعات تقویم"""
         if obj.calendar_event:
             events_display = safe_format_events(obj.calendar_event.events)
             is_holiday = obj.calendar_event.is_holiday
@@ -82,7 +100,7 @@ class BaseTicketAdmin(admin.ModelAdmin):
                     <strong>رویدادها:</strong> {}
                 </div>
                 """,
-                gregorian_to_jalali(obj.calendar_event.date),
+                gregorian_to_jalali_with_day(obj.calendar_event.date),
                 "تعطیل" if is_holiday else "غیر تعطیل",
                 events_display
             )
@@ -90,6 +108,7 @@ class BaseTicketAdmin(admin.ModelAdmin):
     calendar_info.short_description = 'اطلاعات تقویم'
 
     def weather_display(self, obj):
+        """نمایش اطلاعات آب‌وهوا"""
         if obj.weather:
             return format_html(
                 "<div style='direction: rtl;'>"
@@ -107,10 +126,21 @@ class BaseTicketAdmin(admin.ModelAdmin):
     weather_display.short_description = 'آب و هوا'
 
     def display_departure(self, obj):
-        return gregorian_to_jalali(obj.departure_datetime)
-    display_departure.short_description = 'زمان حرکت'
+        """نمایش تاریخ و زمان حرکت به صورت شمسی"""
+        try:
+            if obj.departure_datetime:
+                return format_html(
+                    '<div style="direction: rtl;">{}</div>',
+                    gregorian_to_jalali_with_day(obj.departure_datetime)
+                )
+            return "-"
+        except Exception as e:
+            print(f"Error in display_departure for {obj.id}: {str(e)}")
+            return "-"
+    display_departure.short_description = 'زمان حرکت (شمسی)'
 
     def display_capacity_status(self, obj):
+        """نمایش وضعیت ظرفیت"""
         if obj.capacity <= 0:
             return format_html('<span style="color: red;">تکمیل شده</span>')
         return format_html('<span style="color: green;">{} صندلی خالی</span>', obj.capacity)
@@ -161,7 +191,8 @@ class WeatherAdmin(BaseAdmin):
     list_filter = ('city',)
 
     def request_date_time(self, obj):
-        return gregorian_to_jalali(obj.request_date_time)
+        """نمایش زمان درخواست به صورت شمسی"""
+        return gregorian_to_jalali_with_day(obj.request_date_time)
     request_date_time.short_description = 'زمان درخواست'
 
 @admin.register(CrawlerStatus)
@@ -194,7 +225,8 @@ class CrawlerStatusAdmin(BaseAdmin):
     status_display.short_description = 'وضعیت'
 
     def last_run_formatted(self, obj):
-        return gregorian_to_jalali(obj.last_run) if obj.last_run else '-'
+        """نمایش آخرین اجرا به صورت شمسی"""
+        return gregorian_to_jalali_with_day(obj.last_run) if obj.last_run else '-'
     last_run_formatted.short_description = 'آخرین اجرا'
 
     def error_preview(self, obj):
@@ -220,7 +252,7 @@ class CrawlerStatusAdmin(BaseAdmin):
             """,
             obj.get_crawler_type_display(),
             obj.get_status_display(),
-            gregorian_to_jalali(obj.last_run) if obj.last_run else 'نامشخص',
+            gregorian_to_jalali_with_day(obj.last_run) if obj.last_run else 'نامشخص',
             obj.items_crawled,
             obj.error_message or 'بدون خطا'
         )
@@ -228,18 +260,20 @@ class CrawlerStatusAdmin(BaseAdmin):
 
 @admin.register(CalendarEvent)
 class CalendarEventAdmin(BaseAdmin):
-    list_display = ('date', 'display_solar_date', 'holiday_status', 'display_events')
+    list_display = ('display_solar_date', 'holiday_status', 'display_events')
     search_fields = ('date', 'events')
     list_filter = ('is_holiday',)
     readonly_fields = ('detailed_info',)
 
     def display_solar_date(self, obj):
-        if obj.solar_year and obj.solar_month and obj.solar_day:
-            return f"{obj.solar_year}/{obj.solar_month}/{obj.solar_day}"
+        """نمایش تاریخ رویداد به صورت شمسی"""
+        if obj.date:
+            return gregorian_to_jalali_with_day(obj.date)
         return "-"
-    display_solar_date.short_description = "تاریخ شمسی"
+    display_solar_date.short_description = "تاریخ رویداد (شمسی)"
 
     def holiday_status(self, obj):
+        """نمایش وضعیت تعطیلی"""
         return format_html(
             '<span style="color: {};">{}</span>',
             'red' if obj.is_holiday else 'green',
@@ -248,6 +282,7 @@ class CalendarEventAdmin(BaseAdmin):
     holiday_status.short_description = "وضعیت تعطیلی"
 
     def display_events(self, obj):
+        """نمایش رویدادها"""
         events = safe_format_events(obj.events)
         return format_html(
             "<div style='direction: rtl; text-align: right;'>{}</div>",
@@ -256,6 +291,7 @@ class CalendarEventAdmin(BaseAdmin):
     display_events.short_description = "رویدادها"
 
     def detailed_info(self, obj):
+        """نمایش جزئیات رویداد"""
         return format_html(
             """
             <div style="direction: rtl; padding: 10px; background: #f5f5f5; border-radius: 5px;">
@@ -267,7 +303,7 @@ class CalendarEventAdmin(BaseAdmin):
             </div>
             """,
             obj.date.strftime("%Y-%m-%d"),
-            gregorian_to_jalali(obj.date),
+            gregorian_to_jalali_with_day(obj.date),
             'تعطیل' if obj.is_holiday else 'غیر تعطیل',
             safe_format_events(obj.events).replace("، ", "<br>• ")
         )
