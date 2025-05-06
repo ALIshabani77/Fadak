@@ -131,18 +131,39 @@ class BaseTicketAdmin(admin.ModelAdmin):
     weather_display.short_description = 'آب و هوا'
 
     def display_departure(self, obj):
-        """نمایش تاریخ و زمان حرکت به صورت شمسی"""
-        try:
-            if obj.departure_datetime:
-                result = gregorian_to_jalali_with_day(obj.departure_datetime)
-                if result.startswith("خطا"):
-                    return format_html('<div style="color: red; direction: rtl;">{}</div>', result)
-                return format_html('<div style="direction: rtl;">{}</div>', result)
+        """نمایش تاریخ و زمان حرکت به صورت شمسی با فرمت کامل"""
+        if not obj.departure_datetime:
             return "-"
+        
+        try:
+            # تبدیل به تاریخ شمسی
+            jalali_datetime = gregorian_to_jalali_with_day(obj.departure_datetime)
+            
+            # اگر خطایی در تبدیل رخ داده باشد
+            if any(jalali_datetime.startswith(prefix) for prefix in ["خطا", "فرمت", "نوع"]):
+                return format_html(
+                    '<div style="color: red; direction: rtl;">{}</div>',
+                    jalali_datetime
+                )
+            
+            # اضافه کردن ساعت به خروجی
+            dt = timezone.localtime(obj.departure_datetime)
+            time_str = dt.strftime("%H:%M")
+            
+            return format_html(
+                '<div style="direction: rtl;">{} - ساعت {}</div>',
+                jalali_datetime,
+                time_str
+            )
+            
         except Exception as e:
-            return format_html('<div style="color: red; direction: rtl;">خطا در نمایش تاریخ: {}</div>', str(e))
-    
-    
+            return format_html(
+                '<div style="color: red; direction: rtl;">خطا در نمایش زمان حرکت: {}</div>',
+                str(e)
+            )
+    display_departure.short_description = 'زمان حرکت (شمسی)'
+        
+        
     def display_capacity_status(self, obj):
         """نمایش وضعیت ظرفیت"""
         if obj.capacity <= 0:
