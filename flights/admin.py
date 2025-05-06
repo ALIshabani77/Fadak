@@ -29,7 +29,6 @@ def gregorian_to_jalali_with_day(dt):
         dt = timezone.localtime(dt)
         jalali_dt = jdatetime.datetime.fromgregorian(datetime=dt)
         
-        # نام روزهای هفته به فارسی
         weekdays_fa = {
             0: "شنبه",
             1: "یکشنبه",
@@ -40,14 +39,20 @@ def gregorian_to_jalali_with_day(dt):
             6: "جمعه"
         }
         
-        # فرمت تاریخ و زمان با صفرهای ابتدایی
         date_time_str = f"{jalali_dt.year}-{jalali_dt.month:02d}-{jalali_dt.day:02d}"
         weekday_str = weekdays_fa[jalali_dt.weekday()]
         
         return f"{date_time_str} ({weekday_str})"
+    
+    except ValueError as e:
+        # خطاهای مربوط به فرمت نادرست تاریخ
+        return f"فرمت تاریخ نامعتبر: {dt}"
+    except AttributeError as e:
+        # اگر شیء dt ویژگی‌های لازم را نداشته باشد
+        return f"نوع داده نامعتبر: {type(dt)}"
     except Exception as e:
-        print(f"Error in gregorian_to_jalali_with_day: {str(e)}")
-        return "-"
+        # برای خطاهای غیرمنتظره دیگر
+        return f"خطا در تبدیل تاریخ: {str(e)}"
 
 def safe_format_events(events):
     """فرمت‌بندی ایمن رویدادها با پشتیبانی از JSON و لیست"""
@@ -129,16 +134,15 @@ class BaseTicketAdmin(admin.ModelAdmin):
         """نمایش تاریخ و زمان حرکت به صورت شمسی"""
         try:
             if obj.departure_datetime:
-                return format_html(
-                    '<div style="direction: rtl;">{}</div>',
-                    gregorian_to_jalali_with_day(obj.departure_datetime)
-                )
+                result = gregorian_to_jalali_with_day(obj.departure_datetime)
+                if result.startswith("خطا"):
+                    return format_html('<div style="color: red; direction: rtl;">{}</div>', result)
+                return format_html('<div style="direction: rtl;">{}</div>', result)
             return "-"
         except Exception as e:
-            print(f"Error in display_departure for {obj.id}: {str(e)}")
-            return "-"
-    display_departure.short_description = 'زمان حرکت (شمسی)'
-
+            return format_html('<div style="color: red; direction: rtl;">خطا در نمایش تاریخ: {}</div>', str(e))
+    
+    
     def display_capacity_status(self, obj):
         """نمایش وضعیت ظرفیت"""
         if obj.capacity <= 0:
@@ -308,3 +312,8 @@ class CalendarEventAdmin(BaseAdmin):
             safe_format_events(obj.events).replace("، ", "<br>• ")
         )
     detailed_info.short_description = 'جزئیات'
+
+
+
+
+
