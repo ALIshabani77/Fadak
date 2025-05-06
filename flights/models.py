@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils import timezone
 from django.db.models import JSONField
+import jdatetime
 
 class CrawlerStatus(models.Model):
     CRAWLER_TYPES = (
@@ -39,10 +40,22 @@ class CalendarEvent(models.Model):
     solar_day = models.IntegerField(blank=True, null=True, verbose_name="روز شمسی")
     solar_month = models.IntegerField(blank=True, null=True, verbose_name="ماه شمسی")
     solar_year = models.IntegerField(blank=True, null=True, verbose_name="سال شمسی")
+    solar_weekday = models.CharField(max_length=10, blank=True, null=True, verbose_name="روز هفته شمسی")
 
     class Meta:
         verbose_name = "رویداد تقویمی"
         verbose_name_plural = "رویدادهای تقویمی"
+
+    def save(self, *args, **kwargs):
+        # تبدیل تاریخ میلادی به شمسی هنگام ذخیره
+        if self.date:
+            jalali_date = jdatetime.date.fromgregorian(date=self.date)
+            self.solar_year = jalali_date.year
+            self.solar_month = jalali_date.month
+            self.solar_day = jalali_date.day
+            weekdays_fa = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"]
+            self.solar_weekday = weekdays_fa[jalali_date.weekday()]
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"رویداد در {self.date}"
@@ -73,12 +86,27 @@ class BaseTicketModel(models.Model):
     capacity = models.IntegerField(verbose_name="ظرفیت")
     type_of_class = models.CharField(max_length=50, verbose_name="نوع کلاس")
     departure_datetime = models.DateTimeField(verbose_name="تاریخ و زمان حرکت")
+    solar_year = models.IntegerField(blank=True, null=True, verbose_name="سال شمسی")
+    solar_month = models.IntegerField(blank=True, null=True, verbose_name="ماه شمسی")
+    solar_day = models.IntegerField(blank=True, null=True, verbose_name="روز شمسی")
+    solar_weekday = models.CharField(max_length=10, blank=True, null=True, verbose_name="روز هفته شمسی")
     request_date_time = models.DateTimeField(default=timezone.now, verbose_name="زمان درخواست")
     weather = models.ForeignKey(Weather, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="آب و هوا")
     calendar_event = models.ForeignKey(CalendarEvent, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="رویداد تقویمی")
 
     class Meta:
         abstract = True
+
+    def save(self, *args, **kwargs):
+        # تبدیل تاریخ میلادی به شمسی هنگام ذخیره
+        if self.departure_datetime:
+            jalali_date = jdatetime.datetime.fromgregorian(datetime=self.departure_datetime)
+            self.solar_year = jalali_date.year
+            self.solar_month = jalali_date.month
+            self.solar_day = jalali_date.day
+            weekdays_fa = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"]
+            self.solar_weekday = weekdays_fa[jalali_date.weekday()]
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.origin} به {self.destination} - {self.type_of_class}"
