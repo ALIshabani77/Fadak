@@ -3,6 +3,32 @@ from django.utils import timezone
 from django.db.models import JSONField
 import jdatetime
 
+
+def convert_to_jalali(gregorian_date, is_datetime=True):
+    """
+    Convert Gregorian date to Jalali and return year, month, day, and weekday in Persian
+    :param gregorian_date: The Gregorian date to convert
+    :param is_datetime: Boolean indicating if the input is datetime (True) or date (False)
+    :return: Dictionary containing jalali year, month, day, and weekday
+    """
+    if not gregorian_date:
+        return None
+        
+    if is_datetime:
+        jalali_date = jdatetime.datetime.fromgregorian(datetime=gregorian_date)
+    else:
+        jalali_date = jdatetime.date.fromgregorian(date=gregorian_date)
+    
+    weekdays_fa = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"]
+    
+    return {
+        'year': jalali_date.year,
+        'month': jalali_date.month,
+        'day': jalali_date.day,
+        'weekday': weekdays_fa[jalali_date.weekday()]
+    }
+
+
 class CrawlerStatus(models.Model):
     CRAWLER_TYPES = (
         ('flight', 'پرواز'),
@@ -33,6 +59,7 @@ class CrawlerStatus(models.Model):
     def __str__(self):
         return f"{self.get_crawler_type_display()} - {self.get_status_display()}"
 
+
 class CalendarEvent(models.Model):
     date = models.DateField(verbose_name="تاریخ رویداد")
     is_holiday = models.BooleanField(default=False, verbose_name="تعطیل")
@@ -47,18 +74,17 @@ class CalendarEvent(models.Model):
         verbose_name_plural = "رویدادهای تقویمی"
 
     def save(self, *args, **kwargs):
-        # تبدیل تاریخ میلادی به شمسی هنگام ذخیره
-        if self.date:
-            jalali_date = jdatetime.date.fromgregorian(date=self.date)
-            self.solar_year = jalali_date.year
-            self.solar_month = jalali_date.month
-            self.solar_day = jalali_date.day
-            weekdays_fa = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"]
-            self.solar_weekday = weekdays_fa[jalali_date.weekday()]
+        jalali_data = convert_to_jalali(self.date, is_datetime=False)
+        if jalali_data:
+            self.solar_year = jalali_data['year']
+            self.solar_month = jalali_data['month']
+            self.solar_day = jalali_data['day']
+            self.solar_weekday = jalali_data['weekday']
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f"رویداد در {self.date}"
+
 
 class Weather(models.Model):
     city = models.CharField(max_length=100, verbose_name="شهر")
@@ -79,6 +105,7 @@ class Weather(models.Model):
     def __str__(self):
         return f"آب و هوای {self.city} - {self.temperature}°C"
 
+
 class BaseTicketModel(models.Model):
     origin = models.CharField(max_length=100, verbose_name="مبدا")
     destination = models.CharField(max_length=100, verbose_name="مقصد")
@@ -98,18 +125,17 @@ class BaseTicketModel(models.Model):
         abstract = True
 
     def save(self, *args, **kwargs):
-        # تبدیل تاریخ میلادی به شمسی هنگام ذخیره
-        if self.departure_datetime:
-            jalali_date = jdatetime.datetime.fromgregorian(datetime=self.departure_datetime)
-            self.solar_year = jalali_date.year
-            self.solar_month = jalali_date.month
-            self.solar_day = jalali_date.day
-            weekdays_fa = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"]
-            self.solar_weekday = weekdays_fa[jalali_date.weekday()]
+        jalali_data = convert_to_jalali(self.departure_datetime, is_datetime=True)
+        if jalali_data:
+            self.solar_year = jalali_data['year']
+            self.solar_month = jalali_data['month']
+            self.solar_day = jalali_data['day']
+            self.solar_weekday = jalali_data['weekday']
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.origin} به {self.destination} - {self.type_of_class}"
+
 
 class Flight(BaseTicketModel):
     class Meta:
@@ -118,6 +144,7 @@ class Flight(BaseTicketModel):
 
     def __str__(self):
         return f"{self.origin} به {self.destination} - {self.type_of_class}"
+
 
 class Bus(BaseTicketModel):
     amenities = JSONField(blank=True, null=True, default=list, verbose_name="امکانات")
@@ -128,6 +155,7 @@ class Bus(BaseTicketModel):
 
     def __str__(self):
         return f"{self.origin} به {self.destination} - {self.type_of_class}"
+
 
 class Train(BaseTicketModel):
     class Meta:
